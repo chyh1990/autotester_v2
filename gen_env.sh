@@ -16,7 +16,8 @@ function getversion1
 
 
 uname -s -o -m > $OUT
-for i in gcc arm-eabi-gcc qemu-system-x86_64 gdb arm-eabi-gdb
+TOOLCHAIN=/tmp/my-android-toolchain/bin/arm-linux-androideabi
+for i in $TOOLCHAIN-g++ cmake clang g++
 do
 	getversion "$i"
 done

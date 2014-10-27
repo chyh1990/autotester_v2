@@ -49,8 +49,10 @@ helpers do
 
 		cwd = Dir.getwd
 		# FIXME: Hardcoded repo abspath
-		repo_abspath = cwd + "/.."
-		result_abspath = repo_abspath + "/result"
+		#repo_abspath = cwd + "/.."
+		#result_abspath = repo_abspath + "/result"
+		repo_abspath = $CONFIG[:repo_abspath]
+		result_abspath = $CONFIG[:result_abspath]
 		Dir.chdir File.join(repo_abspath, repo)
 
 		if File.executable_real? "formatter.py"
@@ -170,7 +172,7 @@ end
 get '/' do
 	@status_line = []
 	begin
-		Timeout.timeout(2) do
+		Timeout.timeout(10) do
 			s = TCPSocket.open($CONFIG[:ping][:frontend_addr], $CONFIG[:ping][:port]) 
 			while l = s.gets 
 				@status_line << l.chomp

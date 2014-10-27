@@ -2,17 +2,22 @@
 # encoding: utf-8
 
 require 'yaml'
-require 'grit'
+#require 'grit'
+require 'rugged'
 require 'pp'
 require 'logger'
 require 'time'
 require 'timeout'
 require 'socket'
 require 'mail'
+require 'json'
+
+USERNAME=`whoami`.strip
 
 ROOT= File.dirname(File.expand_path __FILE__)
 CONFIG_FILE= File.join ROOT, "config.yaml"
 puts CONFIG_FILE
+
 
 # quick fix to get correct string encoding
 YAML::ENGINE.yamler='syck'
@@ -134,18 +139,22 @@ def time_cmd(command,timeout)
 	end
 end
 
-class Grit::Actor
-	def simplify
-		"#{@name} <#{@email}>"
-	end
-end
+#class Grit::Actor
+#	def simplify
+#		"#{@name} <#{@email}>"
+#	end
+#end
+#
 
-class Grit::Commit
+class Rugged::Commit
+	def simplify_actor actor
+		"#{actor[:name]} <#{actor[:email]}>"
+	end
 	def simplify
-		{:id => id, :author => author.simplify,
-		 :committer => committer.simplify, 
-		 :authored_date => authored_date.to_s,
-		 :committed_date => committed_date.to_s,
+		{:id => oid,
+   		 :author => simplify_actor(author),
+		 :committer => simplify_actor(committer), 
+		 :committed_date => time.to_s,
 		 :message => message.split("\n").first
 		}
 	end
@@ -161,8 +170,10 @@ class CommitFilter
 		def ext(extlist, commits)
 			commits.select do |c|
 				# f => ["test.c", 1, 0 ,1]
+				change_files = []
+				c.diff.each_patch {|p| change_files << p.delta.new_file[:path]}
 				(c.parents.count > 1)  \
-				  || (c.stats.files.any? { |f| extlist.include? File.extname(f.first) })
+				  || (change_files.any? { |f| extlist.include? File.extname(f.first) })
 			end
 		end
 	end
@@ -219,6 +230,7 @@ class CompileRepo
 
 	def initialize config
 
+		@config = config
 		@name = config[:name]
 		fail "REPO name is null" if @name.nil?
 		@url = config[:url]
@@ -241,25 +253,30 @@ class CompileRepo
 		@runner.push(TestGroup::TestPhrase.new "AutoTest", './autotest.sh ' + @result_dir, @run_timeout_s)
 
 		begin
-			@repo = Grit::Repo.new config[:name]
-		rescue Grit::NoSuchPathError
+			@repo = Rugged::Repository.new config[:name]
+		rescue Rugged::OSError => e
 			LOGGER.info  "Cloning #{@name}"
-			`git clone "#{@url}" "#{@name}"`
-			fail "Fail to clone #{@url}" if $?.exitstatus != 0
-			@repo = Grit::Repo.new config[:name]
+			#`git clone "#{@url}" "#{@name}"`
+			#fail "Fail to clone #{@url}" if $?.exitstatus != 0
+			#@repo = Grit::Repo.new config[:name]
+			Rugged::Repository.clone_at @url, @name, :credentials => $DEFAULT_CRED
+			@repo = Rugged::Repository.new config[:name]
 		end
 		LOGGER.info "Repo #{@name} ready!"
-		@repo.remotes.each { |r| puts "  #{r.name} #{r.commit.id}" }
+		#@repo.remotes.each { |r| puts "  #{r.name} #{r.commit.id}" }
+		@repo.branches.each_name(:remote).sort.each{|r| puts "  #{r}"}
 	end
 
-	def send_mail(ref, result, report_file = nil)
+	def send_mail(ref, target_commit, result, report_file = nil)
 		return if $CONFIG[:mail].nil?
 		return if @nomail
-		LOGGER_VERBOSE.info "send_mail to #{ref.commit.author.email}"
+		commit = target_commit
+		author = commit.author
+		LOGGER_VERBOSE.info "send_mail to #{author[:email]}"
 		conf = $CONFIG[:mail]
 		dm = $CONFIG[:domain_name] || "localhost"
 		b = []
-		b << "Hi, #{ref.commit.author.name}:"
+		b << "Hi, #{author[:name]}:"
 		b << "Here is a report from autotest system, please visit: http://#{dm}"
 		b << "#{Time.now}"
 		b << "===================================\n"
@@ -283,18 +300,19 @@ class CompileRepo
 
 		mail = Mail.new do
 			from conf[:from]
-			to   ref.commit.author.email
+			to   author[:email]
 			cc   conf[:cc] || []
-			subject "[Autotest][#{result[:ok]}] #{repo_name}:#{ref.name} #{ref.commit.id}"
+			subject "[Autotest][#{result[:ok]}] #{repo_name}:#{ref.name} #{target_commit.oid}"
 			body b.join("\n")
 			add_file report_file if report_file
 		end
-		mail.deliver! rescue LOGGER.error "Fail to send mail to #{ref.commit.author.simplify}"
+		mail.deliver! rescue LOGGER.error "Fail to send mail to #{author[:email]}"
 	end
 
-	def run_test_for_commits(ref, new_commits)
+	def run_test_for_commits(ref, target_commit, new_commits)
 
-		LOGGER.info "Repo #{@name}: OK, let's test branch #{ref.name}:#{ref.commit.id}"
+		commitid = target_commit.oid
+		LOGGER.info "Repo #{@name}: OK, let's test branch #{ref.name}:#{commitid}"
 
 		#now begin test
 		failed, result = @runner.run_all
@@ -302,8 +320,8 @@ class CompileRepo
 		## we can use c.to_hash
 		commits_info = new_commits.map {|c| c.simplify }
 
-		report_name = File.join @result_dir, "#{ref.commit.id}-#{Time.now.to_i}-#{ok}-#{$$}.yaml"
-		report = {:ref => [ref.name, ref.commit.id], :filter_commits => commits_info, :ok => ok, :result => result, :timestamp => Time.now.to_i }
+		report_name = File.join @result_dir, "#{commitid}-#{Time.now.to_i}-#{ok}-#{$$}.yaml"
+		report = {:ref => [ref.name, commitid], :filter_commits => commits_info, :ok => ok, :result => result, :timestamp => Time.now.to_i }
 
 		File.open(report_name, "w") do |io|
 			YAML.dump report, io
@@ -311,7 +329,7 @@ class CompileRepo
 
 		LOGGER.info "Repo #{@name}: Test done"
 
-		send_mail ref, report, report_name
+		send_mail ref, target_commit, report, report_name
 
 	end
 
@@ -320,18 +338,47 @@ class CompileRepo
 		!(@blacklist.any?{|r| refname =~ r})
 	end
 
+	def gerrit_list_open
+		#LOGGER.info "connect gerrit #{@name}"
+		return [] unless @config[:gerrit_url]
+		#XXX use open-uri?
+		t = `curl -s --digest --user '#{@config[:gerrit_user]}:#{@config[:gerrit_pass]}' #{@config[:gerrit_url]}/a/changes/?q=status:open\\&o=CURRENT_REVISION`.split("\n")[1..-1].join("\n")
+		
+		changes = JSON.parse(t) rescue []
+		list = []
+		changes.select{|c| c["project"] == @name}.each {|c|
+			rev = c["current_revision"]
+			ref = c["revisions"][rev]["fetch"]["http"]["ref"]
+			branch = "origin/" + c["branch"]
+			list << {:rev => rev, :remote_ref => ref, :branch_name => branch}
+		}
+		origin = @repo.remotes.first
+		#new_branchs = []
+		list.each {|e|
+			origin.fetch [e[:remote_ref]], :credentials => $DEFAULT_CRED
+			#new_branchs << @repo.branches.create(e[:branch_name], "FETCH_HEAD")
+			#p @repo.lookup(e[:rev])
+			e[:commit] = @repo.lookup(e[:rev])
+			e[:branch] = @repo.branches[e[:branch_name]]
+		}
+		list
+		#new_branchs
+	end
+
 	def start_test
 		#we are in repo dir
-		origin = @repo.remote_list.first
+		origin = @repo.remotes.first
 		return unless origin
-		#LOGGER_VERBOSE.info "fetching #{@name}"
 
 		begin
-			@repo.remote_fetch origin
-		rescue Grit::Git::GitTimeout => e
-			LOGGER.error "fetch #{@name} timeout: #{e}"
+			LOGGER_VERBOSE.info "fetching #{@name}"
+			#@repo.remote_fetch origin
+			origin.fetch :credentials => $DEFAULT_CRED
+		rescue Exception => e
+			LOGGER.error "Failed to fetch #{@name}, #{e.inspect}"
 			return
 		end
+
 
 		last_test_file = File.join @result_dir, ".list"
 		compiled_file = File.join @result_dir, ".compiled"
@@ -340,21 +387,30 @@ class CompileRepo
 		compiled_list = File.readlines(compiled_file).map{|line| line.chomp} rescue []
 
 		new_compiled_list = []
-		test_refs = @repo.remotes
-		test_refs.each do |ref|
+
+		list_open = gerrit_list_open
+		@repo.branches.each(:remote) {|r|
+			list_open << {:branch => r, :commit => r.target, :is_upstream => true}
+		}
+		#p list_open
+
+		list_open.each do |lo|
+			ref = lo[:branch]
+			commit = lo[:commit]
 			next if ref.name =~ /.+\/HEAD/
 			#next if @blacklist.include? ref.name
 			next unless white_black_list ref.name
 
-			next if compiled_list.include? ref.commit.id
+			commitid = commit.oid
+			#p ref.target_id
+			next if compiled_list.include? commitid
 
-			commitid = ref.commit.id
 
 			begin
 				#force checkout here
 				LOGGER.info "Checkout #{@name} #{ref.name}:#{commitid}"
-				@repo.git.checkout( {:f=>true}, commitid)
-			rescue Grit::Git::CommandFailed
+				@repo.checkout(commitid, :strategy => :force)
+			rescue
 				error "Fail to checkout #{commitid}"
 				next
 			end
@@ -362,38 +418,47 @@ class CompileRepo
 			## extract commit info, max item 10
 			last_test_commit = last_test_list[ref.name]
 
+			walker = Rugged::Walker.new @repo
+			walker.sorting(Rugged::SORT_TOPO)
+			new_commits = []
+			walker.push(commitid)
 			if last_test_commit
-				# old..new
-				new_commits = @repo.commits_between(last_test_commit, commitid).reverse
+				#new_commits = @repo.commits_between(last_test_commit, commitid).reverse
+				walker.hide(last_test_commit)
 			else
 				LOGGER.info "#{ref.name} new branch?"
-				new_commits = @repo.commits commitid, 30
 			end
+			walker.each {|oid|
+				new_commits << oid
+				break if new_commits.size > 30
+			}
+			# old..new
+			new_commits.reverse!
 			# if the branch has been reset after last test,
 			# new_commits will be empty
-			new_commits = [ref.commit] if new_commits.empty?
+			new_commits = [ref.target] if new_commits.empty?
 
 			puts "#{@name} before filters:"
-			new_commits.each {|c| puts "  #{c.id}" }
+			new_commits.each {|c| puts "  #{c.oid}" }
 
 			#apply filters
 			@filters.each { |f| new_commits = CommitFilter.__send__(*f, new_commits) }
 
 			puts "#{@name} after filters:"
-			new_commits.each {|c| puts "  #{c.id}" }
+			new_commits.each {|c| puts "  #{c.oid}" }
 
 			LOGGER.info "too many commits, maybe new branch or rebased" if new_commits.length > 10
 
 			if new_commits.empty?
 				LOGGER.info "#{@name}:#{ref.name}:#{commitid} introduced no new commits after fiters, skip build"
 			else
-				run_test_for_commits ref, new_commits
+				run_test_for_commits ref, commit, new_commits
 			end
 
 			# mark it
 			new_compiled_list |= [commitid]
 			compiled_list << commitid
-			last_test_list[ref.name] = commitid
+			last_test_list[ref.name] = commitid if lo[:is_upstream]
 		end
 
 		File.open(last_test_file, "w") do |f|
@@ -443,10 +508,13 @@ def startme
 			puts "Loading config..."
 			puts "============================"
 			$CONFIG = YAML.load File.read(CONFIG_FILE)
+
+			$DEFAULT_CRED = Rugged::Credentials::SshKey.new(:privatekey=>"/home/#{USERNAME}/.ssh/id_rsa",
+									:publickey=>"/home/#{USERNAME}/.ssh/id_rsa.pub", :username=>$CONFIG[:git_username])
 			old_config_md5 = config_md5
 			Dir.chdir $CONFIG[:repo_abspath]
 			repos = create_all_repo
-			Grit::Git.git_timeout = $CONFIG[:git_timeout] || 10
+			#Grit::Git.git_timeout = $CONFIG[:git_timeout] || 10
 			start_logger_server
 		end
 		repos.each do |k,v|
