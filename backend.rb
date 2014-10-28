@@ -11,6 +11,9 @@ require 'timeout'
 require 'socket'
 require 'mail'
 require 'json'
+require 'uri'
+require 'net/http'
+require 'net/http/digest_auth'
 
 USERNAME=`whoami`.strip
 
@@ -330,6 +333,8 @@ class CompileRepo
 
 		LOGGER.info "Repo #{@name}: Test done"
 
+
+		gerrit_verify_change info, !failed
 		send_mail ref, target_commit, report, report_name
 
 	end
@@ -339,11 +344,49 @@ class CompileRepo
 		!(@blacklist.any?{|r| refname =~ r})
 	end
 
+	def gerrit_do_req(url)
+		#`curl -s --digest --user '#{@config[:gerrit_user]}:#{@config[:gerrit_pass]}' #{@config[:gerrit_url]}/a#{url}`
+		digest_auth = Net::HTTP::DigestAuth.new
+
+		uri = URI.parse "#{@config[:gerrit_url]}/a#{url}"
+		h = Net::HTTP.new uri.host, uri.port
+
+		uri.user = @config[:gerrit_user]
+		uri.password = @config[:gerrit_pass]
+
+		req = Net::HTTP::Get.new uri.request_uri
+		res = h.request req
+		auth = digest_auth.auth_header uri, res['www-authenticate'], 'GET'
+		req = Net::HTTP::Get.new uri.request_uri
+		req.add_field 'Authorization', auth
+
+		h.request(req).body.split("\n")[1..-1].join("\n")
+	end
+	def gerrit_post_req(url, body)
+		#`curl -s --digest --user '#{@config[:gerrit_user]}:#{@config[:gerrit_pass]}' #{@config[:gerrit_url]}/a#{url}`
+		digest_auth = Net::HTTP::DigestAuth.new
+
+		uri = URI.parse "#{@config[:gerrit_url]}/a#{url}"
+		h = Net::HTTP.new uri.host, uri.port
+
+		uri.user = @config[:gerrit_user]
+		uri.password = @config[:gerrit_pass]
+
+		req = Net::HTTP::Post.new uri.request_uri
+		res = h.request req
+		auth = digest_auth.auth_header uri, res['www-authenticate'], 'POST'
+		req = Net::HTTP::Post.new uri.request_uri
+		req.add_field 'Authorization', auth
+		req.add_field 'Content-Type', 'application/json'
+		req.body = body
+		h.request(req).body.split("\n")[1..-1].join("\n")
+	end
+
+
 	def gerrit_list_open
 		#LOGGER.info "connect gerrit #{@name}"
 		return [] unless @config[:gerrit_url]
-		#XXX use open-uri?
-		t = `curl -s --digest --user '#{@config[:gerrit_user]}:#{@config[:gerrit_pass]}' #{@config[:gerrit_url]}/a/changes/?q=status:open\\&o=CURRENT_REVISION`.split("\n")[1..-1].join("\n")
+		t = gerrit_do_req("/changes/?q=status:open&o=CURRENT_REVISION")
 		
 		changes = JSON.parse(t) rescue []
 		list = []
@@ -364,6 +407,18 @@ class CompileRepo
 		}
 		list
 		#new_branchs
+	end
+
+	def gerrit_verify_change gerrit_info, result
+		url = "/changes/#{gerrit_info["id"]}/revisions/#{gerrit_info["current_revision"]}/review"
+		body = {
+			"message" => "autobuild",
+			"labels" => {
+				"Verified" => (result ? 1 : -1)
+			}
+		}.to_json
+
+		resp = gerrit_post_req url, body
 	end
 
 	def start_test
