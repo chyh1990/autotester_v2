@@ -16,6 +16,14 @@
 		<td><strong>HEAD</strong></td>
 		<td><%= h @report[:ref].last  %></td>
 	</tr>
+	<% if @report[:gerrit_info] %>
+	<tr>
+	<td><strong>Change-ID</strong></td>
+	<td><a target="_blank" href="<%= @dn + "/#/c/" + @report[:gerrit_info]["_number"].to_s %>">
+	<%= @report[:gerrit_info]["change_id"] %>
+	</a></td>
+	</tr>
+	<% end %>
 	<tr>
 		<td rowspan=<%= @report[:result].count+1 %> ><strong>Result</strong></td>
 		<td>Phrase</td>

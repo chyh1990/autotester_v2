@@ -19,11 +19,9 @@ set :bind, $CONFIG[:bind] || '0.0.0.0'
 set :port, $CONFIG[:port] || 4567
 
 $formats = {
-  /(\[ *PASS *\])/ => '<span class="line-ok">\1</span>',
-  /(\[ *! *PASS *! *\])/ => '<span class="line-warning">\1</span>',
-  /(\[ *FAIL *\])/ => '<span class="line-warning">\1</span>',
-  /(\[ *! *FAIL *! *\])/ => '<span class="line-error">\1</span>',
-  /(\[ *!? *BROKEN *!? *\])/ => '<span class="line-error">\1</span>',
+  /[wW]arning/ => '<span class="line-warning">_</span>',
+  /Built|Done|done/ => '<span class="line-ok">_</span>',
+  /ERROR|error|cannot/ => '<span class="line-error">_</span>',
 }
 
 helpers do
@@ -39,7 +37,7 @@ helpers do
 	def ol(line)
 		t = h line.chomp
 		$formats.each do |p, s|
-			return t.gsub(p, s) if t =~ p
+			return s.gsub("_", t) if t =~ p
 		end
 		t
 	end
@@ -142,6 +140,10 @@ get '/repo/:repo/' do
 	erb :testlist
 end
 
+def find_repo_conf name
+	$CONFIG[:repos].find {|e| e[:name] == name}
+end
+
 get '/repo/:repo/:tid' do
 	repo = params[:repo]
 	tid = params[:tid]
@@ -152,6 +154,7 @@ get '/repo/:repo/:tid' do
 	halt 404 if @report.nil?
 	@repo = repo
 	@tid = tid
+	@dn = find_repo_conf(repo)[:gerrit_url] || ""
 	erb :result
 end
 
