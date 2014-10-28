@@ -285,6 +285,7 @@ class CompileRepo
 		b << env
 		b << "===================================\n"
 		b << ">>> git clone #{@url}"
+		b << YAML.dump(result[:gerrit_info]) << "\n\n" if result[:gerrit_info]
 		b << YAML.dump(result[:ref])
 		b << YAML.dump(result[:filter_commits]) << "\n"
 		b << "===================================\n"
@@ -309,7 +310,7 @@ class CompileRepo
 		mail.deliver! rescue LOGGER.error "Fail to send mail to #{author[:email]}"
 	end
 
-	def run_test_for_commits(ref, target_commit, new_commits)
+	def run_test_for_commits(ref, target_commit, new_commits, info)
 
 		commitid = target_commit.oid
 		LOGGER.info "Repo #{@name}: OK, let's test branch #{ref.name}:#{commitid}"
@@ -321,7 +322,7 @@ class CompileRepo
 		commits_info = new_commits.map {|c| c.simplify }
 
 		report_name = File.join @result_dir, "#{commitid}-#{Time.now.to_i}-#{ok}-#{$$}.yaml"
-		report = {:ref => [ref.name, commitid], :filter_commits => commits_info, :ok => ok, :result => result, :timestamp => Time.now.to_i }
+		report = {:ref => [ref.name, commitid], :filter_commits => commits_info, :ok => ok, :result => result, :timestamp => Time.now.to_i, :gerrit_info => info }
 
 		File.open(report_name, "w") do |io|
 			YAML.dump report, io
@@ -350,7 +351,7 @@ class CompileRepo
 			rev = c["current_revision"]
 			ref = c["revisions"][rev]["fetch"]["http"]["ref"]
 			branch = "origin/" + c["branch"]
-			list << {:rev => rev, :remote_ref => ref, :branch_name => branch}
+			list << {:rev => rev, :remote_ref => ref, :branch_name => branch, :gerrit_info => c}
 		}
 		origin = @repo.remotes.first
 		#new_branchs = []
@@ -403,8 +404,11 @@ class CompileRepo
 
 			commitid = commit.oid
 			#p ref.target_id
-			next if compiled_list.include? commitid
-
+			if compiled_list.include? commitid
+				#LOGGER.info "Mark upstream: #{ref.name} => #{commitid}"
+				last_test_list[ref.name] = commitid if lo[:is_upstream]
+				next
+			end
 
 			begin
 				#force checkout here
@@ -452,7 +456,7 @@ class CompileRepo
 			if new_commits.empty?
 				LOGGER.info "#{@name}:#{ref.name}:#{commitid} introduced no new commits after fiters, skip build"
 			else
-				run_test_for_commits ref, commit, new_commits
+				run_test_for_commits ref, commit, new_commits, lo[:gerrit_info]
 			end
 
 			# mark it
