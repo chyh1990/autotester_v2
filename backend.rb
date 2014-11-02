@@ -10,8 +10,8 @@ require 'time'
 require 'timeout'
 require 'socket'
 require 'mail'
-require 'json'
 require 'uri'
+require 'json'
 require 'net/http'
 require 'net/http/digest_auth'
 
@@ -226,6 +226,39 @@ class TestGroup
 		end
 	end
 
+	class ExternalBuildPhrase
+		attr_accessor :name, :config, :timeout, :commitid
+		def initialize(_name, _config, _cid, _timeout = 30)
+			@name = _name
+			@config = _config
+			@timeout = _timeout
+			@commitid = _cid
+		end
+
+		def run
+			uri = URI.parse @config[:windows_server] if @config[:windows_server]
+			params = "commitid=" << @commitid
+
+			http = Net::HTTP.new uri.host, uri.port
+			http.read_timeout = @timeout
+			req = Net::HTTP::Post.new(uri.path)
+			req.body = params
+			timeout = false
+			err_code = 0
+			begin
+				res = http.request(req).body
+				result = res.force_encoding("utf-8").split("\n")
+				# err_code protocol TBD
+				err_code = res.scan(/失败 (\d)/).select {|e| e.first.to_i > 0}.length > 0 ? 1 : 0
+			rescue
+				timeout = true
+				result = []
+				err_code = 62 #ETIME
+			end
+			@result = {:timeout=> timeout, :status => err_code, :output => result}
+		end
+	end
+
 end
 
 class CompileRepo
@@ -250,10 +283,6 @@ class CompileRepo
 		@run_timeout_s = (config[:run_timeout_min] || 1) * 60
 		@filters = config[:filters] || []
 		@result_dir = File.join $CONFIG[:result_abspath], @name
-
-		@runner = TestGroup.new
-		@runner.push(TestGroup::TestPhrase.new "AutoBuild", './autobuild.sh', @build_timeout_s)
-		@runner.push(TestGroup::TestPhrase.new "AutoTest", './autotest.sh ' + @result_dir, @run_timeout_s)
 
 		begin
 			@repo = Rugged::Repository.new config[:name]
@@ -319,7 +348,17 @@ class CompileRepo
 		LOGGER.info "Repo #{@name}: OK, let's test branch #{ref.name}:#{commitid}"
 
 		#now begin test
+
+		# LOGGER_VERBOSE.info res.body
+
+		@runner = TestGroup.new
+		@runner.push(TestGroup::TestPhrase.new "AutoBuild", './autobuild.sh', @build_timeout_s)
+		@runner.push(TestGroup::ExternalBuildPhrase.new "ExternalBuild", @config, commitid, @build_timeout_s)
+		@runner.push(TestGroup::TestPhrase.new "AutoTest", './autotest.sh ' + @result_dir, @run_timeout_s)
+
+
 		failed, result = @runner.run_all
+
 		ok = failed ? "FAIL" : "OK"
 		## we can use c.to_hash
 		commits_info = new_commits.map {|c| c.simplify }
@@ -327,7 +366,9 @@ class CompileRepo
 		report_name = File.join @result_dir, "#{commitid}-#{Time.now.to_i}-#{ok}-#{$$}.yaml"
 		report = {:ref => [ref.name, commitid], :filter_commits => commits_info, :ok => ok, :result => result, :timestamp => Time.now.to_i, :gerrit_info => info }
 
+
 		File.open(report_name, "w") do |io|
+			## change enconding
 			YAML.dump report, io
 		end
 
@@ -384,10 +425,10 @@ class CompileRepo
 
 
 	def gerrit_list_open
-		#LOGGER.info "connect gerrit #{@name}"
+		LOGGER.info "connect gerrit #{@name}"
 		return [] unless @config[:gerrit_url]
 		t = gerrit_do_req("/changes/?q=status:open&o=CURRENT_REVISION")
-		
+
 		changes = JSON.parse(t) rescue []
 		list = []
 		changes.select{|c| c["project"] == @name}.each {|c|
@@ -400,6 +441,13 @@ class CompileRepo
 		#new_branchs = []
 		list.each {|e|
 			origin.fetch [e[:remote_ref]], :credentials => $DEFAULT_CRED
+			LOGGER_VERBOSE.info e[:remote_ref]
+
+			uri = URI.parse(@config[:windows_server])
+			params = {'ref'=>"#{e[:remote_ref]}"}
+			resp = Net::HTTP.post_form(uri,params)
+			#LOGGER_VERBOSE.info resp.body
+
 			#new_branchs << @repo.branches.create(e[:branch_name], "FETCH_HEAD")
 			#p @repo.lookup(e[:rev])
 			e[:commit] = @repo.lookup(e[:rev])
@@ -444,11 +492,13 @@ class CompileRepo
 
 		new_compiled_list = []
 
-		list_open = gerrit_list_open
+		list_open = gerrit_list_open rescue []
 		@repo.branches.each(:remote) {|r|
 			list_open << {:branch => r, :commit => r.target, :is_upstream => true}
 		}
 		#p list_open
+		#
+		
 
 		list_open.each do |lo|
 			ref = lo[:branch]
@@ -520,6 +570,7 @@ class CompileRepo
 			last_test_list[ref.name] = commitid if lo[:is_upstream]
 		end
 
+
 		File.open(last_test_file, "w") do |f|
 			last_test_list.each {|k,v| f.puts "#{k} #{v}"}
 		end
@@ -558,6 +609,12 @@ def start_logger_server
 end
 
 def startme
+
+	trap "SIGINT" do
+		pp "SIGINT recerved, Exit."
+		exit 130
+	end
+
 	old_config_md5 = nil
 	repos = Hash.new
 	loop do
