@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
-# encoding: utf-8
+# encoding: UTF-8
 
 require 'yaml'
 #require 'grit'
@@ -119,6 +119,7 @@ end
 
 def time_cmd(command,timeout)
 	cmd_output = []
+	err_code = 0
 	LOGGER.info "Entering #{command} at #{Time.now}"
 	begin
 		pipe = IO.popen("#{command} 2>&1")
@@ -134,7 +135,17 @@ def time_cmd(command,timeout)
 			#return [child pid, status]
 			Process.waitpid2(pipe.pid)
 		end
-		return {:timeout =>false, :status =>status[1].exitstatus, :output => cmd_output, :pid => pipe.pid}
+
+		if status[1].exitstatus.to_s != 0
+			err_code = status[1].exitstatus
+		elsif   err_code =~ cmd_output.join(" ").match(/(\d+) FAILURE/)
+			err_code = $1
+		else
+			err_code = 0
+		end
+
+
+		return {:timeout => false, :status => err_code, :output => cmd_output, :pid => pipe.pid}
 	rescue Timeout::Error
 		LOGGER.error "#{command} pid #{pipe.pid} timeout at #{Time.now}" rescue nil
 		Process.kill 9, pipe.pid if pipe.pid rescue nil
@@ -212,13 +223,20 @@ class TestGroup
 		[failed, @result]
 	end
 
-	class TestPhrase
-		attr_accessor :name, :cmd, :timeout
+	class TestPhraseBase
+		attr_accessor :name, :timeout
 		attr_reader :result
-		def initialize(_name, _cmd, _timeout=10)
+		def initialize(_name, _timeout)
 			@name = _name
-			@cmd = _cmd
 			@timeout = _timeout
+		end
+	end
+
+	class TestPhrase < TestPhraseBase
+		attr_accessor :name, :cmd, :timeout
+		def initialize(_name, _cmd, _timeout=10)
+			super _name, _timeout
+			@cmd = _cmd
 		end
 
 		def run
@@ -226,17 +244,17 @@ class TestGroup
 		end
 	end
 
-	class ExternalBuildPhrase
-		attr_accessor :name, :config, :timeout, :commitid
-		def initialize(_name, _config, _cid, _timeout = 30)
-			@name = _name
+	class RemoteBuildPhrase < TestPhraseBase
+		attr_accessor :config, :url, :commitid
+		def initialize(_name, _url, _config, _cid, _timeout = 30)
+			super _name, _timeout
 			@config = _config
-			@timeout = _timeout
 			@commitid = _cid
+			@url = _url
 		end
 
 		def run
-			uri = URI.parse @config[:windows_server] if @config[:windows_server]
+			uri = URI.parse @url
 			params = "commitid=" << @commitid
 
 			http = Net::HTTP.new uri.host, uri.port
@@ -249,7 +267,7 @@ class TestGroup
 				res = http.request(req).body
 				result = res.force_encoding("utf-8").split("\n")
 				# err_code protocol TBD
-				err_code = res.scan(/失败 (\d)/).select {|e| e.first.to_i > 0}.length > 0 ? 1 : 0
+				err_code = result[0].strip.to_i rescue 1 
 			rescue
 				timeout = true
 				result = []
@@ -257,8 +275,8 @@ class TestGroup
 			end
 			@result = {:timeout=> timeout, :status => err_code, :output => result}
 		end
-	end
 
+	end
 end
 
 class CompileRepo
@@ -283,6 +301,8 @@ class CompileRepo
 		@run_timeout_s = (config[:run_timeout_min] || 1) * 60
 		@filters = config[:filters] || []
 		@result_dir = File.join $CONFIG[:result_abspath], @name
+
+		@config[:remote_server] ||= []
 
 		begin
 			@repo = Rugged::Repository.new config[:name]
@@ -353,7 +373,9 @@ class CompileRepo
 
 		@runner = TestGroup.new
 		@runner.push(TestGroup::TestPhrase.new "AutoBuild", './autobuild.sh', @build_timeout_s)
-		@runner.push(TestGroup::ExternalBuildPhrase.new "ExternalBuild", @config, commitid, @build_timeout_s)
+		@config[:remote_server].each {|ser|
+			@runner.push(TestGroup::RemoteBuildPhrase.new "RemoteBuild", ser, @config, commitid, @build_timeout_s)
+		}
 		@runner.push(TestGroup::TestPhrase.new "AutoTest", './autotest.sh ' + @result_dir, @run_timeout_s)
 
 
@@ -425,7 +447,7 @@ class CompileRepo
 
 
 	def gerrit_list_open
-		LOGGER.info "connect gerrit #{@name}"
+		LOGGER.info "connect to gerrit: #{@name}"
 		return [] unless @config[:gerrit_url]
 		t = gerrit_do_req("/changes/?q=status:open&o=CURRENT_REVISION")
 
@@ -434,6 +456,7 @@ class CompileRepo
 		changes.select{|c| c["project"] == @name}.each {|c|
 			rev = c["current_revision"]
 			ref = c["revisions"][rev]["fetch"]["http"]["ref"]
+			#ref = c["_number"]
 			branch = "origin/" + c["branch"]
 			list << {:rev => rev, :remote_ref => ref, :branch_name => branch, :gerrit_info => c}
 		}
@@ -443,12 +466,12 @@ class CompileRepo
 			origin.fetch [e[:remote_ref]], :credentials => $DEFAULT_CRED
 			LOGGER_VERBOSE.info e[:remote_ref]
 
-			uri = URI.parse(@config[:windows_server])
-			params = {'ref'=>"#{e[:remote_ref]}"}
-			resp = Net::HTTP.post_form(uri,params)
-			#LOGGER_VERBOSE.info resp.body
+			@config[:remote_server].each {|ser|
+				uri = URI.parse(ser)
+				params = {'ref'=>"#{e[:remote_ref]}"}
+				resp = Net::HTTP.post_form(uri,params)
+			}
 
-			#new_branchs << @repo.branches.create(e[:branch_name], "FETCH_HEAD")
 			#p @repo.lookup(e[:rev])
 			e[:commit] = @repo.lookup(e[:rev])
 			e[:branch] = @repo.branches[e[:branch_name]]
@@ -492,7 +515,9 @@ class CompileRepo
 
 		new_compiled_list = []
 
-		list_open = gerrit_list_open rescue []
+		#:commit and :branch must NOT be null
+		list_open = gerrit_list_open# rescue []
+		#upstream branches
 		@repo.branches.each(:remote) {|r|
 			list_open << {:branch => r, :commit => r.target, :is_upstream => true}
 		}
@@ -611,7 +636,7 @@ end
 def startme
 
 	trap "SIGINT" do
-		pp "SIGINT recerved, Exit."
+		LOGGER.error "SIGINT recerved, Exit."
 		exit 130
 	end
 

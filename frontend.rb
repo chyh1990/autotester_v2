@@ -21,7 +21,9 @@ set :port, $CONFIG[:port] || 4567
 $formats = {
   /[wW]arning/ => '<span class="line-warning">_</span>',
   /Built|Done|done/ => '<span class="line-ok">_</span>',
-  /ERROR|error|cannot/ => '<span class="line-error">_</span>',
+  /ERROR|error|cannot|failed|fail|FAIL/ => '<span class="line-error">_</span>',
+  /Up-to-date:/ => '',
+  /Installing:/ => ''
 }
 
 helpers do
@@ -69,7 +71,8 @@ helpers do
 			Process.waitpid2(pipe.pid)
 		else
 			result.each do |line|
-				formatter_output << ol(line) + "<br>"
+				f = ol line
+				formatter_output << f + "<br>" if f.length > 0
 			end
 		end
 		Dir.chdir cwd
