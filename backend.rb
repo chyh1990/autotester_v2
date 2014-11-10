@@ -12,6 +12,7 @@ require 'socket'
 require 'mail'
 require 'uri'
 require 'json'
+require 'tempfile'
 require 'net/http'
 require 'net/http/digest_auth'
 
@@ -23,7 +24,9 @@ puts CONFIG_FILE
 
 
 # quick fix to get correct string encoding
-YAML::ENGINE.yamler='syck'
+YAML::ENGINE.yamler='psych'
+LOCAL_ENV=`uname`.strip.downcase
+puts "LOCAL_ENV: #{LOCAL_ENV}"
 
 $CONFIG = Hash.new
 
@@ -233,7 +236,7 @@ class TestGroup
 	end
 
 	class TestPhrase < TestPhraseBase
-		attr_accessor :name, :cmd, :timeout
+		attr_accessor :cmd
 		def initialize(_name, _cmd, _timeout=10)
 			super _name, _timeout
 			@cmd = _cmd
@@ -243,6 +246,25 @@ class TestGroup
 			@result = time_cmd @cmd, @timeout
 		end
 	end
+
+	class LocalTestPhrase < TestPhraseBase
+		attr_accessor :cmds
+		def initialize(_name, _phrase, _cmds, _timeout=10)
+			super "LOCAL-#{_name}-#{_phrase}", _timeout
+			@cmds = _cmds
+			@cmds = [_cmds] if String === _cmds
+		end
+
+		def run
+			bash = Tempfile.new('localtest')
+			bash.write @cmds.join("\n")
+			bash.close
+			@result = time_cmd "/bin/bash #{bash.path}", @timeout
+			bash.unlink
+			@result
+		end
+	end
+
 
 	class RemoteBuildPhrase < TestPhraseBase
 		attr_accessor :config, :url, :commitid
@@ -302,8 +324,6 @@ class CompileRepo
 		@filters = config[:filters] || []
 		@result_dir = File.join $CONFIG[:result_abspath], @name
 
-		@config[:remote_server] ||= []
-
 		begin
 			@repo = Rugged::Repository.new config[:name]
 		rescue Rugged::OSError => e
@@ -362,6 +382,30 @@ class CompileRepo
 		mail.deliver! rescue LOGGER.error "Fail to send mail to #{author[:email]}"
 	end
 
+	def build_runner commitid
+		begin
+			buildconfig = YAML::load(File.read('.autobuild.yml'))
+		rescue
+			LOGGER.error "Fail to parse .autobuild.yml for #{@name}"
+			return nil
+		end
+		buildconfig["jobs"] ||= {}
+		job_seq = ["script", "install", "test"]
+		@runner = TestGroup.new
+		buildconfig["jobs"].each {|k,v|
+			next if v['env'] != LOCAL_ENV
+			job_seq.each {|js|
+				next unless v[js]
+				@runner.push(TestGroup::LocalTestPhrase.new(k, js, v[js], @build_timeout_s))
+			}
+		}
+
+		$CONFIG[:remote_server].each {|k, ser|
+			@runner.push(TestGroup::RemoteBuildPhrase.new "RemoteBuild", ser, @config, commitid, @build_timeout_s)
+		}
+		@runner
+	end
+
 	def run_test_for_commits(ref, target_commit, new_commits, info)
 
 		commitid = target_commit.oid
@@ -370,16 +414,12 @@ class CompileRepo
 		#now begin test
 
 		# LOGGER_VERBOSE.info res.body
-
-		@runner = TestGroup.new
-		@runner.push(TestGroup::TestPhrase.new "AutoBuild", './autobuild.sh', @build_timeout_s)
-		@config[:remote_server].each {|ser|
-			@runner.push(TestGroup::RemoteBuildPhrase.new "RemoteBuild", ser, @config, commitid, @build_timeout_s)
-		}
-		@runner.push(TestGroup::TestPhrase.new "AutoTest", './autotest.sh ' + @result_dir, @run_timeout_s)
-
-
-		failed, result = @runner.run_all
+		runner = build_runner commitid rescue nil
+		unless runner
+			LOGGER.error "Fail to build jobs for #{@name}"
+			return
+		end
+		failed, result = runner.run_all
 
 		ok = failed ? "FAIL" : "OK"
 		## we can use c.to_hash
@@ -397,7 +437,7 @@ class CompileRepo
 		LOGGER.info "Repo #{@name}: Test done"
 
 
-		gerrit_verify_change info, !failed
+		gerrit_verify_change info, !failed if info
 		send_mail ref, target_commit, report, report_name
 
 	end
@@ -466,7 +506,7 @@ class CompileRepo
 			origin.fetch [e[:remote_ref]], :credentials => $DEFAULT_CRED
 			LOGGER_VERBOSE.info e[:remote_ref]
 
-			@config[:remote_server].each {|ser|
+			$CONFIG[:remote_server].each {|k, ser|
 				uri = URI.parse(ser)
 				params = {'ref'=>"#{e[:remote_ref]}"}
 				resp = Net::HTTP.post_form(uri,params)
@@ -516,10 +556,12 @@ class CompileRepo
 		new_compiled_list = []
 
 		#:commit and :branch must NOT be null
-		list_open = gerrit_list_open# rescue []
+		list_open = gerrit_list_open rescue []
+		#list_open = []
 		#upstream branches
 		@repo.branches.each(:remote) {|r|
 			list_open << {:branch => r, :commit => r.target, :is_upstream => true}
+			LOGGER_VERBOSE.info "#{r.name} => #{r.target.oid}"
 		}
 		#p list_open
 		#
@@ -649,6 +691,7 @@ def startme
 			puts "Loading config..."
 			puts "============================"
 			$CONFIG = YAML.load File.read(CONFIG_FILE)
+			$CONFIG[:remote_server] ||= {}
 
 			$DEFAULT_CRED = Rugged::Credentials::SshKey.new(:privatekey=>"/home/#{USERNAME}/.ssh/id_rsa",
 									:publickey=>"/home/#{USERNAME}/.ssh/id_rsa.pub", :username=>$CONFIG[:git_username])
