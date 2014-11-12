@@ -353,15 +353,17 @@ class TestGroup
 			fetch_ref = $1 if @refname =~ /origin\/(.+)/
 			r = ssh_exec! @ssh, "cd #{remote[:work_dir]}/#{@reponame} && git fetch origin #{fetch_ref} && git checkout #{@commitid}" 
 			throw RemoteError.new("fail to fetch #{@reponame}: #{r[0]}", r[1]) if r[1] != 0
+			r = ssh_exec! @ssh, "cd #{remote[:work_dir]}/#{@reponame} && git submodule init && git submodule update" 
+			throw RemoteError.new("fail to fetch submodule #{@reponame}: #{r[0]}", r[1]) if r[1] != 0
 			r.first
 		end
 
 		def run_build_script
 			cmds = ["cd #{@remote[:work_dir]}/#{@reponame}"] + @cmds
+			#p cmds.join(";")
 			LOGGER_VERBOSE.info "run script repo #{@reponame} on #{@remote[:name]}, #{@refname} => #{@commitid}"
 			r = ssh_exec! @ssh, cmds
-			throw RemoteError.new("fail to fetch #{@reponame}: #{r[0]}", r[1]) if r[1] != 0
-			r.first
+			#throw RemoteError.new("fail to fetch #{@reponame}: #{r[0]}", r[1]) if r[1] != 0
 		end
 
 		private :prepare_repo, :fetch_and_checkout, :run_build_script
@@ -377,7 +379,9 @@ class TestGroup
 					result += prepare_repo.split("\n")
 					result += fetch_and_checkout.split("\n")
 				end
-				result += run_build_script.split("\n")
+				r = run_build_script
+				result += r[0].split("\n")
+				err_code = r[1]
 			rescue RemoteError => e
 				timeout = false
 				result += e.message.split("\n")
@@ -389,6 +393,7 @@ class TestGroup
 			#puts result.join("\n")
 			@ssh.close
 			#fail "XXX"
+			result.map!{|e| e.encode "UTF-8", @remote[:source_encoding], :invalid => :replace } if @remote[:source_encoding]
 			@result = {:timeout=> timeout, :status => err_code, :output => result}
 		end
 
@@ -520,7 +525,7 @@ class CompileRepo
 
 		# LOGGER_VERBOSE.info res.body
 		remote_ref = info ? info[:remote_ref] : ref.name
-		runner = build_runner @name, remote_ref, commitid #rescue nil
+		runner = build_runner @name, remote_ref, commitid rescue nil
 		unless runner
 			LOGGER.error "Fail to build jobs for #{@name}"
 			return
@@ -788,7 +793,7 @@ def check_remotes
 		LOGGER.info "Checking remote: #{k}..."
 		v[:name] = k
 		begin
-			Timeout.timeout(10) do 
+			Timeout.timeout(20) do 
 				start_on_remote(v) do |ssh|
 					res = ssh.exec!("hostname")
 					LOGGER.info "hostname: #{res}"
