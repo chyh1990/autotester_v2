@@ -267,26 +267,30 @@ class TestGroup
 
 
 	class RemoteBuildPhrase < TestPhraseBase
-		attr_accessor :config, :url, :commitid
-		def initialize(_name, _url, _config, _cid, _timeout = 30)
+		attr_accessor :config, :url, :commitid, :refname, :reponame
+		def initialize(_name, _url, _reponame ,_refname, _config, _cid, _timeout = 30)
 			super _name, _timeout
 			@config = _config
 			@commitid = _cid
+			@refname = _refname
 			@url = _url
+			@reponame = _reponame
 		end
 
 		def run
 			uri = URI.parse @url
-			params = "commitid=" << @commitid
+			params = {"name"=>@reponame,"ref"=>@refname,"commitid"=>@commitid}.to_json
+			#params = "name=" << @reponame << "&ref=" << @refname << "&commitid=" << @commitid
 
-			http = Net::HTTP.new uri.host, uri.port
+			http = Net::HTTP.new uri.hostname, uri.port
 			http.read_timeout = @timeout
-			req = Net::HTTP::Post.new(uri.path)
+			req = Net::HTTP::Post.new(uri, initheader = {'Content-Type' =>'application/json'})
 			req.body = params
 			timeout = false
 			err_code = 0
 			begin
-				res = http.request(req).body
+				#res = http.request(req).body
+				res = http.start { |http| http.request(req) }
 				result = res.force_encoding("utf-8").split("\n")
 				# err_code protocol TBD
 				err_code = result[0].strip.to_i rescue 1 
@@ -382,7 +386,7 @@ class CompileRepo
 		mail.deliver! rescue LOGGER.error "Fail to send mail to #{author[:email]}"
 	end
 
-	def build_runner commitid
+	def build_runner reponame, refname, commitid
 		begin
 			buildconfig = YAML::load(File.read('.autobuild.yml'))
 		rescue
@@ -401,7 +405,7 @@ class CompileRepo
 		}
 
 		$CONFIG[:remote_server].each {|k, ser|
-			@runner.push(TestGroup::RemoteBuildPhrase.new "RemoteBuild", ser, @config, commitid, @build_timeout_s)
+			@runner.push(TestGroup::RemoteBuildPhrase.new "RemoteBuild", ser, reponame, refname ,@config, commitid, @build_timeout_s)
 		}
 		@runner
 	end
@@ -414,7 +418,8 @@ class CompileRepo
 		#now begin test
 
 		# LOGGER_VERBOSE.info res.body
-		runner = build_runner commitid rescue nil
+		remote_ref = info ? info[:remote_ref] : ref.name
+		runner = build_runner @name, remote_ref, commitid rescue nil
 		unless runner
 			LOGGER.error "Fail to build jobs for #{@name}"
 			return
@@ -496,6 +501,8 @@ class CompileRepo
 		changes.select{|c| c["project"] == @name}.each {|c|
 			rev = c["current_revision"]
 			ref = c["revisions"][rev]["fetch"]["http"]["ref"]
+			c[:remote_ref] = ref
+			c[:rev] = rev
 			#ref = c["_number"]
 			branch = "origin/" + c["branch"]
 			list << {:rev => rev, :remote_ref => ref, :branch_name => branch, :gerrit_info => c}
@@ -506,11 +513,11 @@ class CompileRepo
 			origin.fetch [e[:remote_ref]], :credentials => $DEFAULT_CRED
 			LOGGER_VERBOSE.info e[:remote_ref]
 
-			$CONFIG[:remote_server].each {|k, ser|
-				uri = URI.parse(ser)
-				params = {'ref'=>"#{e[:remote_ref]}"}
-				resp = Net::HTTP.post_form(uri,params)
-			}
+			#$CONFIG[:remote_server].each {|k, ser|
+			#	uri = URI.parse(ser)
+			#	params = {'ref'=>"#{e[:remote_ref]}"}
+			#	resp = Net::HTTP.post_form(uri,params)
+			#}
 
 			#p @repo.lookup(e[:rev])
 			e[:commit] = @repo.lookup(e[:rev])
