@@ -14,9 +14,12 @@ require 'uri'
 require 'json'
 require 'tempfile'
 require 'net/http'
+require 'net/ssh'
 require 'net/http/digest_auth'
 
 USERNAME=`whoami`.strip
+PRIVATE_KEY_FILE = File.expand_path("~/.ssh/id_rsa")
+PUBLIC_KEY_FILE = File.expand_path("~/.ssh/id_rsa.pub")
 
 ROOT= File.dirname(File.expand_path __FILE__)
 CONFIG_FILE= File.join ROOT, "config.yaml"
@@ -156,12 +159,50 @@ def time_cmd(command,timeout)
 	end
 end
 
-#class Grit::Actor
-#	def simplify
-#		"#{@name} <#{@email}>"
-#	end
-#end
-#
+def ssh_exec!(ssh, commands)
+	stdout_data = ""
+	#stderr_data = ""
+	exit_code = nil
+	exit_signal = nil
+	ssh.open_channel do |channel|
+		if String === commands
+			command = commands
+		else
+			#XXX problematic for bash script
+			# e.g. if..then
+			command = commands.join(";")
+		end
+		channel.exec(command) do |ch, success|
+			unless success
+				abort "FAILED: couldn't execute command (ssh.channel.exec)"
+			end
+			channel.on_data do |ch,data|
+				stdout_data+=data
+			end
+
+			channel.on_extended_data do |ch,type,data|
+				stdout_data+=data
+			end
+
+			channel.on_request("exit-status") do |ch,data|
+				exit_code = data.read_long
+			end
+
+			channel.on_request("exit-signal") do |ch, data|
+				exit_signal = data.read_long
+			end
+		end
+	end
+	ssh.loop
+	[stdout_data, exit_code, exit_signal]
+end
+	
+
+def start_on_remote remote
+	ssh = Net::SSH.start(remote[:host], remote[:ssh_username], :password => remote[:ssh_pass])
+	yield ssh if block_given?
+	ssh
+end
 
 class Rugged::Commit
 	def simplify_actor actor
@@ -265,40 +306,89 @@ class TestGroup
 		end
 	end
 
+	class RemoteError < RuntimeError
+		attr_accessor :code
+		def initialize(msg=nil, code=nil)
+			super msg
+			@code = code
+		end
+	end
+
+
 
 	class RemoteBuildPhrase < TestPhraseBase
-		attr_accessor :config, :url, :commitid, :refname, :reponame
-		def initialize(_name, _url, _reponame ,_refname, _config, _cid, _timeout = 30)
-			super _name, _timeout
+		attr_accessor :config, :remote, :commitid, :refname, :reponame
+		def initialize(_name, _phrase, _remote, _refname, _config, _cid, _cmds = [], _timeout = 30, need_checkout = false)
+			super "REMOTE-#{_phrase}-#{_name}", _timeout
 			@config = _config
 			@commitid = _cid
 			@refname = _refname
-			@url = _url
-			@reponame = _reponame
+			@reponame = @config[:name]
+			@remote = _remote
+			@cmds = _cmds
+			@cmds = [_cmds] if String === _cmds
+			@need_checkout = need_checkout
+		end
+		def prepare_repo 
+			LOGGER_VERBOSE.info "Prepare repo for #{@reponame} on #{@remote[:name]}"
+			r = ssh_exec! @ssh, "mkdir -p #{@remote[:work_dir]}"
+			#LOGGER_VERBOSE.info r.first
+			raise RemoteError.new("fail to create work dir", r[1]) if r[1] != 0
+
+			r = ssh_exec! @ssh, "cat #{@remote[:work_dir]}/#{@reponame}/.git/config"
+			#puts r.first
+			if r[1] != 0
+				LOGGER.info "cloning #{@reponame} to #{@remote[:name]}"
+				r = ssh_exec! @ssh, "cd #{@remote[:work_dir]} && git clone #{@config[:url]}"
+				#LOGGER_VERBOSE.info r.first
+				raise RemoteError.new("fail clone #{@reponame}: #{r[0]}", r[1]) if r[1] != 0
+			end
+			return "Prepare repo done"
 		end
 
-		def run
-			uri = URI.parse @url
-			params = {"name"=>@reponame,"ref"=>@refname,"commitid"=>@commitid}.to_json
-			#params = "name=" << @reponame << "&ref=" << @refname << "&commitid=" << @commitid
+		def fetch_and_checkout
+			LOGGER_VERBOSE.info "fetching repo #{@reponame} on #{@remote[:name]}, #{@refname} => #{@commitid}"
+			fetch_ref = @refname
+			#XXX origin/master can't be fetched
+			fetch_ref = $1 if @refname =~ /origin\/(.+)/
+			r = ssh_exec! @ssh, "cd #{remote[:work_dir]}/#{@reponame} && git fetch origin #{fetch_ref} && git checkout #{@commitid}" 
+			throw RemoteError.new("fail to fetch #{@reponame}: #{r[0]}", r[1]) if r[1] != 0
+			r.first
+		end
 
-			http = Net::HTTP.new uri.hostname, uri.port
-			http.read_timeout = @timeout
-			req = Net::HTTP::Post.new(uri, initheader = {'Content-Type' =>'application/json'})
-			req.body = params
+		def run_build_script
+			cmds = ["cd #{@remote[:work_dir]}/#{@reponame}"] + @cmds
+			LOGGER_VERBOSE.info "run script repo #{@reponame} on #{@remote[:name]}, #{@refname} => #{@commitid}"
+			r = ssh_exec! @ssh, cmds
+			throw RemoteError.new("fail to fetch #{@reponame}: #{r[0]}", r[1]) if r[1] != 0
+			r.first
+		end
+
+		private :prepare_repo, :fetch_and_checkout, :run_build_script
+
+		def run
+			LOGGER.info "Running on #{@remote[:name]}: #{@reponame} => #{@name}"
+			@ssh = start_on_remote @remote
 			timeout = false
+			result = []
 			err_code = 0
 			begin
-				#res = http.request(req).body
-				res = http.start { |http| http.request(req) }
-				result = res.force_encoding("utf-8").split("\n")
-				# err_code protocol TBD
-				err_code = result[0].strip.to_i rescue 1 
-			rescue
+				if @need_checkout
+					result += prepare_repo.split("\n")
+					result += fetch_and_checkout.split("\n")
+				end
+				result += run_build_script.split("\n")
+			rescue RemoteError => e
+				timeout = false
+				result += e.message.split("\n")
+				err_code = e.code
+			rescue Exception => e
 				timeout = true
-				result = []
 				err_code = 62 #ETIME
 			end
+			#puts result.join("\n")
+			@ssh.close
+			#fail "XXX"
 			@result = {:timeout=> timeout, :status => err_code, :output => result}
 		end
 
@@ -404,8 +494,19 @@ class CompileRepo
 			}
 		}
 
-		$CONFIG[:remote_server].each {|k, ser|
-			@runner.push(TestGroup::RemoteBuildPhrase.new "RemoteBuild", ser, reponame, refname ,@config, commitid, @build_timeout_s)
+		buildconfig["jobs"].each {|k,v|
+			env = v['env']
+			next if v['env'] == LOCAL_ENV
+			unless $CONFIG[:remote_server][env]
+				LOGGER.error "Remote server #{env} not available"
+				next
+			end
+			job_seq.each {|js|
+				next unless v[js]
+				# only checkout at build phrase
+				@runner.push(TestGroup::RemoteBuildPhrase.new k, js, $CONFIG[:remote_server][env], refname,
+					     @config, commitid, v[js], @build_timeout_s, js == 'script')
+			}
 		}
 		@runner
 	end
@@ -419,7 +520,7 @@ class CompileRepo
 
 		# LOGGER_VERBOSE.info res.body
 		remote_ref = info ? info[:remote_ref] : ref.name
-		runner = build_runner @name, remote_ref, commitid rescue nil
+		runner = build_runner @name, remote_ref, commitid #rescue nil
 		unless runner
 			LOGGER.error "Fail to build jobs for #{@name}"
 			return
@@ -682,6 +783,23 @@ def start_logger_server
 	end
 end
 
+def check_remotes
+	$CONFIG[:remote_server].each {|k,v|
+		LOGGER.info "Checking remote: #{k}..."
+		v[:name] = k
+		begin
+			Timeout.timeout(10) do 
+				start_on_remote(v) do |ssh|
+					res = ssh.exec!("hostname")
+					LOGGER.info "hostname: #{res}"
+				end
+			end
+		rescue Timeout::Error
+			INFO.fatal "Timeout: remote server #{k}"
+		end
+	}
+end
+
 def startme
 
 	trap "SIGINT" do
@@ -699,9 +817,10 @@ def startme
 			puts "============================"
 			$CONFIG = YAML.load File.read(CONFIG_FILE)
 			$CONFIG[:remote_server] ||= {}
+			check_remotes
 
-			$DEFAULT_CRED = Rugged::Credentials::SshKey.new(:privatekey=>"/home/#{USERNAME}/.ssh/id_rsa",
-									:publickey=>"/home/#{USERNAME}/.ssh/id_rsa.pub", :username=>$CONFIG[:git_username])
+			$DEFAULT_CRED = Rugged::Credentials::SshKey.new(:privatekey=>PRIVATE_KEY_FILE,
+									:publickey=>PUBLIC_KEY_FILE, :username=>$CONFIG[:git_username])
 			old_config_md5 = config_md5
 			Dir.chdir $CONFIG[:repo_abspath]
 			repos = create_all_repo
