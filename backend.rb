@@ -319,7 +319,7 @@ class TestGroup
 	class RemoteBuildPhrase < TestPhraseBase
 		attr_accessor :config, :remote, :commitid, :refname, :reponame
 		def initialize(_name, _phrase, _remote, _refname, _config, _cid, _cmds = [], _timeout = 30, need_checkout = false)
-			super "REMOTE-#{_phrase}-#{_name}", _timeout
+			super "REMOTE-#{_name}-#{_phrase}", _timeout
 			@config = _config
 			@commitid = _cid
 			@refname = _refname
@@ -393,7 +393,9 @@ class TestGroup
 			#puts result.join("\n")
 			@ssh.close
 			#fail "XXX"
-			result.map!{|e| e.encode "UTF-8", @remote[:source_encoding], :invalid => :replace } if @remote[:source_encoding]
+			source_enc = @remote[:source_encoding]
+			source_enc ||= "UTF-8"
+			result.map!{|e| e.encode "UTF-8", source_enc, :invalid => :replace }
 			@result = {:timeout=> timeout, :status => err_code, :output => result}
 		end
 
@@ -837,6 +839,7 @@ def startme
 			Dir.chdir File.join($CONFIG[:repo_abspath], k)
 			v.start_test
 			Dir.chdir $CONFIG[:repo_abspath]
+			sleep 5 #sleep a little while per repo
 		end
 		sleep ($CONFIG[:sleep] || 30)
 		LOGGER.ping
