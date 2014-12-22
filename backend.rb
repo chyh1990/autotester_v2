@@ -370,11 +370,11 @@ class TestGroup
 
 		def run
 			LOGGER.info "Running on #{@remote[:name]}: #{@reponame} => #{@name}"
-			@ssh = start_on_remote @remote
 			timeout = false
 			result = []
 			err_code = 0
 			begin
+				@ssh = start_on_remote @remote
 				if @need_checkout
 					result += prepare_repo.split("\n")
 					result += fetch_and_checkout.split("\n")
@@ -382,16 +382,21 @@ class TestGroup
 				r = run_build_script
 				result += r[0].split("\n")
 				err_code = r[1]
+				@ssh.close 
+			rescue SystemCallError => e
+				timeout = false
+				result += ["error: SystemCallError, machine failure?"]
+				err_code = e.errno
 			rescue RemoteError => e
 				timeout = false
 				result += e.message.split("\n")
 				err_code = e.code
 			rescue Exception => e
 				timeout = true
+				result += e.message.split("\n")
 				err_code = 62 #ETIME
 			end
 			#puts result.join("\n")
-			@ssh.close
 			#fail "XXX"
 			source_enc = @remote[:source_encoding]
 			source_enc ||= "UTF-8"
