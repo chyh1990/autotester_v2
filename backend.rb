@@ -374,25 +374,28 @@ class TestGroup
 			result = []
 			err_code = 0
 			begin
-				@ssh = start_on_remote @remote
-				if @need_checkout
-					result += prepare_repo.split("\n")
-					result += fetch_and_checkout.split("\n")
+				Timeout.timeout(@timeout) do
+					@ssh = start_on_remote @remote
+					if @need_checkout
+						result += prepare_repo.split("\n")
+						result += fetch_and_checkout.split("\n")
+					end
+					r = run_build_script
+					result += r[0].split("\n")
+					err_code = r[1]
+					@ssh.close 
 				end
-				r = run_build_script
-				result += r[0].split("\n")
-				err_code = r[1]
-				@ssh.close 
 			rescue SystemCallError => e
-				timeout = false
 				result += ["error: SystemCallError, machine failure?"]
 				err_code = e.errno
 			rescue RemoteError => e
-				timeout = false
 				result += e.message.split("\n")
 				err_code = e.code
-			rescue Exception => e
+			rescue Timeout::Error
 				timeout = true
+				result += ["error: remote call timeout"]
+				err_code = 62 #ETIME
+			rescue Exception => e
 				result += e.message.split("\n")
 				err_code = 62 #ETIME
 			end
@@ -481,7 +484,7 @@ class CompileRepo
 			from conf[:from]
 			to   author[:email]
 			cc   conf[:cc] || []
-			subject "[Autotest][#{result[:ok]}] #{repo_name}:#{ref.name} #{target_commit.oid}"
+			subject "[Autotest][#{result[:ok]}] #{repo_name}:#{ref.name}~#{target_commit.oid}"
 			body b.join("\n")
 			add_file report_file if report_file
 		end
