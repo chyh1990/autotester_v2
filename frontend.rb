@@ -102,7 +102,7 @@ class ReportCache
 				return nil
 			end
 
-			@@cache[repo] = Hash.new
+			@@cache[repo] ||= Hash.new
 			fs = Hash.new
 
 			dir = File.join($CONFIG[:result_abspath], repo)
