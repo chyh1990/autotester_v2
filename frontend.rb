@@ -4,6 +4,7 @@
 require 'sinatra'
 require 'grit'
 require 'yaml'
+require 'json'
 require 'pp'
 require 'socket'
 require 'timeout'
@@ -175,21 +176,36 @@ get '/about' do
 	erb :about
 end
 
-get '/' do
-	@status_line = []
+def rpc_backend(cmd)
+	status_line = []
 	begin
 		Timeout.timeout(10) do
 			s = TCPSocket.open($CONFIG[:ping][:frontend_addr], $CONFIG[:ping][:port]) 
+			s.puts cmd
 			while l = s.gets 
-				@status_line << l.chomp
+				status_line << l.chomp
 			end
 			s.close
 		end
 	rescue Timeout::Error
-		@status_line << "ERROR: Timeout to connect to backend!"
+		status_line << "ERROR: Timeout to connect to backend!"
 	rescue StandardError => e
-		@status_line << "ERROR: Failed to connect to backend!"
+		status_line << "ERROR: Failed to connect to backend!"
 	end
+	status_line	
+end
+
+post '/repo/:repo/rebuild/:tid' do
+	content_type 'application/json'
+	repo = params[:repo]
+	tid = params[:tid]
+	halt 404 unless ReportCache.check_repo repo
+	rpc_backend "REBUILD #{repo} #{tid}"
+	{:status => "OK"}.to_json
+end
+
+get '/' do
+	@status_line = rpc_backend "PING"
 	@env = File.read(File.join(ROOT, "env.txt")) rescue "Unknown"
 
 	@repos = $CONFIG[:repos]

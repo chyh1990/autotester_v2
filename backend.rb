@@ -13,6 +13,7 @@ require 'mail'
 require 'uri'
 require 'json'
 require 'tempfile'
+require 'thread'
 require 'net/http'
 require 'net/ssh'
 require 'net/http/digest_auth'
@@ -32,6 +33,7 @@ LOCAL_ENV=`uname`.strip.downcase
 puts "LOCAL_ENV: #{LOCAL_ENV}"
 
 $CONFIG = Hash.new
+$TASK_QUEUE = Queue.new
 
 class Numeric
   def datetime_duration
@@ -90,6 +92,15 @@ class PingLogger < Logger
 		super t
 	end
 
+	def enqueue_task cmd
+		if $TASK_QUEUE.size > 10
+			error "Too many tasks, try later"
+		else
+			info "Enqueue #{cmd.first}"
+			$TASK_QUEUE << cmd
+		end
+	end
+
 	def server_loop addr, port
 		return if @server
 		puts "Logger server start @ #{port}"
@@ -97,6 +108,8 @@ class PingLogger < Logger
 		loop do
 			begin
 				client = @server.accept
+				cmd = client.gets.chomp.split
+				enqueue_task cmd unless cmd.first == "PING"
 				client.puts "Last ping: #{@lastping} (#{(Time.now-@lastping).datetime_duration} ago)"
 				@buffer.each { |l| client.puts l}
 				client.close
@@ -411,7 +424,7 @@ class TestGroup
 end
 
 class CompileRepo
-	attr_reader :repo, :name, :url, :blacklist
+	attr_reader :repo, :name, :url, :blacklist, :result_dir
 
 	def initialize config
 
@@ -810,9 +823,36 @@ def check_remotes
 				end
 			end
 		rescue Timeout::Error
-			INFO.fatal "Timeout: remote server #{k}"
+			LOGGER.fatal "Timeout: remote server #{k}"
 		end
 	}
+end
+
+def run_tasks repos
+	loop do
+		break if $TASK_QUEUE.empty?
+		cmd = $TASK_QUEUE.pop
+		case cmd.first
+		when "REBUILD"
+			if cmd.size != 3 || repos[cmd[1]].nil?
+				LOGGER.error "Rebuild: wrong arguments"
+				next
+			end
+			LOGGER.info "Rebuild #{cmd[1]}: #{cmd[2]}"
+			r = cmd[1]
+			compiled_file = File.join repos[r].result_dir, ".compiled"
+			compiled_list = File.readlines(compiled_file).map{|line| line.chomp} rescue next
+			compiled_list.delete_if {|e| e == cmd[2]}
+
+			File.open(compiled_file, "w") do |f|
+				compiled_list.each {|e| f.puts e}
+			end
+		else
+			LOGGER.error "Unknown task: #{cmd.first}"
+			next
+		end
+		sleep 1
+	end
 end
 
 def startme
@@ -842,6 +882,11 @@ def startme
 			#Grit::Git.git_timeout = $CONFIG[:git_timeout] || 10
 			start_logger_server
 		end
+		begin
+			run_tasks repos
+		rescue Exception => e
+			LOGGER.error "Fail to run task: #{e.message}"
+		end
 		repos.each do |k,v|
 			#chdir first
 			Dir.chdir File.join($CONFIG[:repo_abspath], k)
@@ -849,7 +894,15 @@ def startme
 			Dir.chdir $CONFIG[:repo_abspath]
 			sleep 5 #sleep a little while per repo
 		end
-		sleep ($CONFIG[:sleep] || 30)
+
+		total_sleep = $CONFIG[:sleep] || 30
+		loop do
+			break if total_sleep <= 0
+			# flush tasks
+			break if $TASK_QUEUE.size > 0
+			sleep 5
+			total_sleep -= 5
+		end
 		LOGGER.ping
 	end
 end

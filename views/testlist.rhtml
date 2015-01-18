@@ -8,6 +8,7 @@
 		<th>Ref</th>
 		<th>Commit</th>
 		<th>Result</th>
+		<th>Action</th>
 	</thead>
 	<tbody>
 	<% @list.each do |e| %>
@@ -22,8 +23,23 @@
 			<font color=red>FAIL</font>
 		<% end %>
 		</td>
+		<td>
+			<button data-tid="<%= e[:head] %>" type="button" class="rebuild-btn btn btn-danger">Rebuild</button>
+		</td>
 	</tr>
 	<% end %>
 	</tbody>
 </table>
 <a href="/">Back</a>
+
+<script type="text/javascript">
+$(function() {
+	$(".rebuild-btn").click(function() {
+		url = "/repo/<%= @repo %>/rebuild/" + $(this).attr('data-tid');
+		//console.log(url);
+		$.post(url, {}, function(data){
+			alert("Task enqueued");
+		});
+	});
+});
+</script>
