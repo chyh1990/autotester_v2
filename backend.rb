@@ -483,11 +483,13 @@ class CompileRepo
 		b << YAML.dump(result[:ref])
 		b << YAML.dump(result[:filter_commits]) << "\n"
 		b << "===================================\n"
+		keywords = /(error)|(done)|(built)|(warn)/i
 		result[:result].each do |r|
 			b << "#{r[:name]}    #{r[:result][:status]}"
 			b << "Time: #{r[:time]}"
 			b << "---"
-			r[:result][:output].each {|l| b << l }
+			# only select important things
+			r[:result][:output].select{|l| l =~ keywords }.each {|l| b << l }
 			b << "===================================\n"
 		end
 		b << "\nFrom Git autotest system"
