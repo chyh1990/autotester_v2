@@ -318,6 +318,32 @@ class TestGroup
 			@result
 		end
 	end
+	class LocalLintPhrase < TestPhraseBase
+		attr_accessor :cmds
+		def initialize(_name, commit, _timeout=60)
+			super "LOCAL-#{_name}-lint", _timeout
+			@commit = commit
+			@lint_files = {}
+			commit.diff({:ignore_filemode => true, :reverse => true}).each_delta do |delta|
+				fn = delta.new_file[:path]
+				@lint_files[fn] = true if delta.added? || delta.modified?
+			end
+		end
+
+		def run
+			#LOGGER.info "Running Lint..."
+			bash = Tempfile.new('localtest')
+			filters = ['-legal/copyright', '-build/namespaces', '-runtime/references', '-build/include_order']
+			@lint_files.each {|fn,v|
+				bash.puts "#{ROOT}/scripts/cpplint.py --filter=#{filters.join(',')} #{fn}" if fn =~ /(\.hpp)|(\.h)|(\.cpp)$/
+			}
+			bash.puts "echo 'Lint Done!'  && true"
+			bash.close
+			@result = time_cmd "/bin/bash #{bash.path}", @timeout
+			bash.unlink
+			@result
+		end
+	end
 
 	class RemoteError < RuntimeError
 		attr_accessor :code
@@ -506,7 +532,8 @@ class CompileRepo
 		mail.deliver! rescue LOGGER.error "Fail to send mail to #{author[:email]}"
 	end
 
-	def build_runner reponame, refname, commitid
+	def build_runner reponame, refname, commit
+		commitid = commit.oid
 		begin
 			buildconfig = YAML::load(File.read('.autobuild.yml'))
 		rescue
@@ -516,6 +543,9 @@ class CompileRepo
 		buildconfig["jobs"] ||= {}
 		job_seq = ["script", "install", "test"]
 		@runner = TestGroup.new
+
+		@runner.push TestGroup::LocalLintPhrase.new("linux", commit) unless buildconfig[:no_lint]
+
 		buildconfig["jobs"].each {|k,v|
 			next if v['env'] != LOCAL_ENV
 			job_seq.each {|js|
@@ -550,7 +580,7 @@ class CompileRepo
 
 		# LOGGER_VERBOSE.info res.body
 		remote_ref = info ? info[:remote_ref] : ref.name
-		runner = build_runner @name, remote_ref, commitid rescue nil
+		runner = build_runner @name, remote_ref, target_commit #rescue nil
 		unless runner
 			LOGGER.error "Fail to build jobs for #{@name}"
 			return
