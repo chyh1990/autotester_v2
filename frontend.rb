@@ -22,7 +22,7 @@ set :port, $CONFIG[:port] || 4567
 $formats = {
   /[wW]arning/ => '<span class="line-warning">_</span>',
   /Built|Done|done/ => '<span class="line-ok">_</span>',
-  /ERROR|error|cannot|failed|fail|FAIL/ => '<span class="line-error">_</span>',
+  /ERROR|error|cannot|failed|fail|FAIL/i => '<span class="line-error">_</span>',
   /Up-to-date:/ => '',
   /Installing:/ => ''
 }

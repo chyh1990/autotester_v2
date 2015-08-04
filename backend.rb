@@ -334,6 +334,10 @@ class TestGroup
 			#LOGGER.info "Running Lint..."
 			bash = Tempfile.new('localtest')
 			filters = ['-legal/copyright', '-build/namespaces', '-runtime/references', '-build/include_order']
+			if @lint_files.size > 30
+				LOGGER_VERBOSE.info "Too many files to lint!"
+				@lint_files = []
+			end
 			@lint_files.each {|fn,v|
 				bash.puts "#{ROOT}/scripts/cpplint.py --filter=#{filters.join(',')} #{fn}" if fn =~ /(\.hpp)|(\.h)|(\.cpp)$/
 			}
@@ -729,7 +733,7 @@ class CompileRepo
 		#upstream branches
 		@repo.branches.each(:remote) {|r|
 			list_open << {:branch => r, :commit => r.target, :is_upstream => true}
-			LOGGER_VERBOSE.info "#{r.name} => #{r.target.oid}"
+			LOGGER_VERBOSE.info "#{r.name} => #{r.target}"
 		}
 		#p list_open
 		#
