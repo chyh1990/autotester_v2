@@ -419,7 +419,8 @@ eos
       fetch_ref = @refname
       #XXX origin/master can't be fetched
       fetch_ref = $1 if @refname =~ /origin\/(.+)/
-      r = ssh_exec! @ssh, "cd #{remote[:work_dir]}/#{@reponame} && git fetch origin #{fetch_ref} && git checkout #{@commitid}"
+      r = ssh_exec! @ssh, "cd #{remote[:work_dir]}/#{@reponame} && \
+      	git fetch origin #{fetch_ref} && git checkout -f #{@commitid}"
       throw RemoteError.new("fail to fetch #{@reponame}: #{r[0]}", r[1]) if r[1] != 0
       r = ssh_exec! @ssh, "cd #{remote[:work_dir]}/#{@reponame} && git submodule init && git submodule update"
       throw RemoteError.new("fail to fetch submodule #{@reponame}: #{r[0]}", r[1]) if r[1] != 0
