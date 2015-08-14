@@ -14,7 +14,9 @@ errors = 0
 R1 = Regexp.new '\r\n$'
 R2 = Regexp.new '\s+\n$'
 IO.foreach ARGV[0] do |line|
-  if line =~ R1
+  if !line.valid_encoding?
+    puts "#{fn}:#{lineno}:\tInvalid UTF-8 encoding"
+  elsif line =~ R1
     puts "#{fn}:#{lineno}:\tDOS line ending (CRLF) found, use Unix line ending (LF) instead"
     errors += 1
   elsif line =~ R2
