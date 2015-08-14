@@ -318,6 +318,7 @@ class TestGroup
       @result
     end
   end
+
   class LocalLintPhrase < TestPhraseBase
     attr_accessor :cmds
     def initialize(_name, commit, _timeout=60)
@@ -325,14 +326,40 @@ class TestGroup
       @commit = commit
       @lint_files = {}
       commit.diff({:ignore_filemode => true, :reverse => true}).each_delta do |delta|
+        next if delta.binary?
         fn = delta.new_file[:path]
         @lint_files[fn] = true if delta.added? || delta.modified?
       end
     end
 
     def run
+      message = @commit.message.split("\n")
+      msg_lint = nil
+      if message.first.nil? || message.first.empty?
+        msg_lint = "Commit message first line is empty"
+      elsif message.first.length > 50
+        msg_lint = "Commit message summary (first line) must be shorter than 50 characters"
+      elsif message[1] && !message[1].empty?
+        msg_lint = "Commit message second line is NOT empty"
+      end
+      return {:timeout => false, :status => 1, :output => [
+        "ERROR: #{msg_lint}",
+        "See https://github.com/erlang/otp/wiki/Writing-good-commit-messages"
+      ], :pid => -1} if msg_lint
+
       #LOGGER.info "Running Lint..."
       bash = Tempfile.new('localtest')
+      bash.puts "echo 'Checking fatal style errors'"
+      @lint_files.first(100).each {|fn,v|
+        bash.puts "#{ROOT}/scripts/whitespace_checker.rb '#{fn}' || fatal=1"
+      }
+      bash.puts <<-eos
+if [[ -n $fatal ]]; then
+  echo "Fatal style errors found"
+  exit 1
+fi
+eos
+      bash.puts "echo 'Checking non-fatal style errors'"
       filters = ['-legal/copyright', '-build/namespaces', '-runtime/references', '-build/include_order']
       if @lint_files.size > 30
         LOGGER_VERBOSE.info "Too many files to lint!"
@@ -356,8 +383,6 @@ class TestGroup
       @code = code
     end
   end
-
-
 
   class RemoteBuildPhrase < TestPhraseBase
     attr_accessor :config, :remote, :commitid, :refname, :reponame
