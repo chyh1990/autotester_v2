@@ -621,7 +621,8 @@ class CompileRepo
     commits_info = new_commits.map {|c| c.simplify }
 
     report_name = File.join @result_dir, "#{commitid}-#{Time.now.to_i}-#{ok}-#{$$}.yaml"
-    report = {:ref => [ref.name, commitid], :filter_commits => commits_info, :ok => ok, :result => result, :timestamp => Time.now.to_i, :gerrit_info => info }
+    report = {:ref => [ref.name, commitid], :filter_commits => commits_info,
+              :ok => ok, :result => result, :timestamp => Time.now.to_i, :gerrit_info => info }
 
 
     File.open(report_name, "w") do |io|
@@ -631,8 +632,9 @@ class CompileRepo
 
     LOGGER.info "Repo #{@name}: Test done"
 
-
-    gerrit_verify_change info, !failed if info
+    if info
+      gerrit_verify_change(info, !failed) rescue LOGGER.error "Fail to set gerrit status"
+    end
     send_mail ref, target_commit, report, report_name
 
   end
@@ -953,7 +955,7 @@ def startme
       Dir.chdir File.join($CONFIG[:repo_abspath], k)
       v.start_test
       Dir.chdir $CONFIG[:repo_abspath]
-      sleep 5 #sleep a little while per repo
+      sleep 3 #sleep a little while per repo
     end
 
     total_sleep = $CONFIG[:sleep] || 30
@@ -961,8 +963,8 @@ def startme
       break if total_sleep <= 0
       # flush tasks
       break if $TASK_QUEUE.size > 0
-      sleep 5
-      total_sleep -= 5
+      sleep 3
+      total_sleep -= 3
     end
     LOGGER.ping
   end
