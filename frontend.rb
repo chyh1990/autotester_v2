@@ -180,9 +180,9 @@ def rpc_backend(cmd)
 	status_line = []
 	begin
 		Timeout.timeout(10) do
-			s = TCPSocket.open($CONFIG[:ping][:frontend_addr], $CONFIG[:ping][:port]) 
+			s = TCPSocket.open($CONFIG[:ping][:frontend_addr], $CONFIG[:ping][:port])
 			s.puts cmd
-			while l = s.gets 
+			while l = s.gets
 				status_line << l.chomp
 			end
 			s.close
@@ -192,7 +192,7 @@ def rpc_backend(cmd)
 	rescue StandardError => e
 		status_line << "ERROR: Failed to connect to backend!"
 	end
-	status_line	
+	status_line
 end
 
 post '/repo/:repo/rebuild/:tid' do

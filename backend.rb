@@ -209,7 +209,7 @@ def ssh_exec!(ssh, commands)
 	ssh.loop
 	[stdout_data, exit_code, exit_signal]
 end
-	
+
 
 def start_on_remote remote
 	ssh = Net::SSH.start(remote[:host], remote[:ssh_username], :password => remote[:ssh_pass])
@@ -224,7 +224,7 @@ class Rugged::Commit
 	def simplify
 		{:id => oid,
    		 :author => simplify_actor(author),
-		 :committer => simplify_actor(committer), 
+		 :committer => simplify_actor(committer),
 		 :committed_date => time.to_s,
 		 :message => message.split("\n").first
 		}
@@ -372,7 +372,7 @@ class TestGroup
 			@cmds = [_cmds] if String === _cmds
 			@need_checkout = need_checkout
 		end
-		def prepare_repo 
+		def prepare_repo
 			LOGGER_VERBOSE.info "Prepare repo for #{@reponame} on #{@remote[:name]}"
 			r = ssh_exec! @ssh, "mkdir -p #{@remote[:work_dir]}"
 			#LOGGER_VERBOSE.info r.first
@@ -394,9 +394,9 @@ class TestGroup
 			fetch_ref = @refname
 			#XXX origin/master can't be fetched
 			fetch_ref = $1 if @refname =~ /origin\/(.+)/
-			r = ssh_exec! @ssh, "cd #{remote[:work_dir]}/#{@reponame} && git fetch origin #{fetch_ref} && git checkout #{@commitid}" 
+			r = ssh_exec! @ssh, "cd #{remote[:work_dir]}/#{@reponame} && git fetch origin #{fetch_ref} && git checkout #{@commitid}"
 			throw RemoteError.new("fail to fetch #{@reponame}: #{r[0]}", r[1]) if r[1] != 0
-			r = ssh_exec! @ssh, "cd #{remote[:work_dir]}/#{@reponame} && git submodule init && git submodule update" 
+			r = ssh_exec! @ssh, "cd #{remote[:work_dir]}/#{@reponame} && git submodule init && git submodule update"
 			throw RemoteError.new("fail to fetch submodule #{@reponame}: #{r[0]}", r[1]) if r[1] != 0
 			r.first
 		end
@@ -426,7 +426,7 @@ class TestGroup
 					r = run_build_script
 					result += r[0].split("\n")
 					err_code = r[1]
-					@ssh.close 
+					@ssh.close
 				end
 			rescue SystemCallError => e
 				result += ["error: SystemCallError, machine failure?"]
@@ -737,7 +737,7 @@ class CompileRepo
 		}
 		#p list_open
 		#
-		
+
 
 		list_open.each do |lo|
 			ref = lo[:branch]
@@ -852,7 +852,7 @@ def check_remotes
 		LOGGER.info "Checking remote: #{k}..."
 		v[:name] = k
 		begin
-			Timeout.timeout(20) do 
+			Timeout.timeout(20) do
 				start_on_remote(v) do |ssh|
 					res = ssh.exec!("hostname")
 					LOGGER.info "hostname: #{res}"
