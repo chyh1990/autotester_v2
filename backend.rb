@@ -321,6 +321,7 @@ class TestGroup
 
   class LocalLintPhrase < TestPhraseBase
     attr_accessor :cmds
+    BIN_EXT = ['.model', '.tar', '.bin', '.jpg', '.gz', '.png', '.avi', '.mp4']
     def initialize(_name, commit, _timeout=60)
       super "LOCAL-#{_name}-lint", _timeout
       @commit = commit
@@ -328,6 +329,7 @@ class TestGroup
       commit.diff({:ignore_filemode => true, :reverse => true}).each_delta do |delta|
         next if delta.binary?
         fn = delta.new_file[:path]
+        next if BIN_EXT.include?(File.extname(fn))
         @lint_files[fn] = true if delta.added? || delta.modified?
       end
     end
