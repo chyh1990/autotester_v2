@@ -1,9 +1,27 @@
 #!/usr/bin/env ruby
 
+class File
+  def self.is_binary?(name)
+    myStat = stat(name)
+    return false unless myStat.file?
+    open(name) { |file|
+      blk = file.read(myStat.blksize)
+      return blk.size == 0 ||
+        blk.count("^ -~", "^\r\n") / blk.size > 0.3 ||
+        blk.count("\x00") > 0
+    }
+  end
+end
+
 fail 'no input file' unless ARGV[0]
 
 if File.stat(ARGV[0]).size > 1 * 1024 * 1024
   $stderr.puts "#{ARGV[0]} too large, skipping..."
+  exit
+end
+
+if File.is_binary?(ARGV[0])
+  $stderr.puts "#{ARGV[0]} seems to be a binary, skipping..."
   exit
 end
 

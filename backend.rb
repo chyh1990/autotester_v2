@@ -321,7 +321,7 @@ class TestGroup
 
   class LocalLintPhrase < TestPhraseBase
     attr_accessor :cmds
-    BIN_EXT = ['.model', '.tar', '.bin', '.jpg', '.gz', '.png', '.avi', '.mp4']
+    BIN_EXT = ['.model', '.tar', '.bin', '.jpg', '.gz', '.png', '.avi', '.mp4', '.jar', '.dat']
     def initialize(_name, commit, _timeout=60)
       super "LOCAL-#{_name}-lint", _timeout
       @commit = commit
