@@ -25,6 +25,7 @@
 		</td>
 		<td>
 			<button data-tid="<%= e[:head] %>" type="button" class="rebuild-btn btn btn-danger">Rebuild</button>
+			<button data-tid="<%= e[:head] %>" data-clean="true" type="button" class="rebuild-btn btn btn-danger">Clean</button>
 		</td>
 	</tr>
 	<% end %>
@@ -35,9 +36,11 @@
 <script type="text/javascript">
 $(function() {
 	$(".rebuild-btn").click(function() {
-		url = "/repo/<%= @repo %>/rebuild/" + $(this).attr('data-tid');
+		var url = "/repo/<%= @repo %>/rebuild/" + $(this).attr('data-tid');
 		//console.log(url);
-		$.post(url, {}, function(data){
+		var p = {};
+		if ($(this).attr('data-clean') == "true") { p["clean"] = true; }
+		$.post(url, p, function(data){
 			alert("Task enqueued");
 		});
 	});

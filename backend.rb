@@ -349,6 +349,12 @@ class TestGroup
         "See https://github.com/erlang/otp/wiki/Writing-good-commit-messages"
       ], :pid => -1} if msg_lint
 
+      unless message.grep(/^NOLINT/).empty?
+        return {:timeout => false, :status => 0, :output => [
+          "Lint manually disabled by NOLINT line",
+        ], :pid => -1}
+      end
+
       #LOGGER.info "Running Lint..."
       bash = Tempfile.new('localtest')
       bash.puts "echo 'Checking fatal style errors'"
@@ -564,7 +570,7 @@ class CompileRepo
     mail.deliver! rescue LOGGER.error "Fail to send mail to #{author[:email]}"
   end
 
-  def build_runner reponame, refname, commit
+  def build_runner reponame, refname, commit, options = {}
     commitid = commit.oid
     begin
       buildconfig = YAML::load(File.read('.autobuild.yml'))
@@ -573,7 +579,8 @@ class CompileRepo
       return nil
     end
     buildconfig["jobs"] ||= {}
-    job_seq = ["script", "install", "test"]
+    job_seq = ["clean", "script", "install", "test"]
+    job_seq.shift unless options[:clean]
     @runner = TestGroup.new
 
     @runner.push TestGroup::LocalLintPhrase.new("linux", commit) unless buildconfig[:no_lint]
@@ -603,7 +610,7 @@ class CompileRepo
     @runner
   end
 
-  def run_test_for_commits(ref, target_commit, new_commits, info)
+  def run_test_for_commits(ref, target_commit, new_commits, info, options = {})
 
     commitid = target_commit.oid
     LOGGER.info "Repo #{@name}: OK, let's test branch #{ref.name}:#{commitid}"
@@ -612,7 +619,7 @@ class CompileRepo
 
     # LOGGER_VERBOSE.info res.body
     remote_ref = info ? info[:remote_ref] : ref.name
-    runner = build_runner @name, remote_ref, target_commit #rescue nil
+    runner = build_runner @name, remote_ref, target_commit, options #rescue nil
     unless runner
       LOGGER.error "Fail to build jobs for #{@name}"
       return
@@ -734,7 +741,7 @@ class CompileRepo
     resp = gerrit_post_req url, body
   end
 
-  def start_test
+  def start_test options = {}
     #we are in repo dir
     origin = @repo.remotes.first
     return unless origin
@@ -768,7 +775,6 @@ class CompileRepo
     #p list_open
     #
 
-
     list_open.each do |lo|
       ref = lo[:branch]
       commit = lo[:commit]
@@ -777,6 +783,8 @@ class CompileRepo
       next unless white_black_list ref.name
 
       commitid = commit.oid
+      # only build specified commits
+      next if options[:commitids] && !options[:commitids].include?(commitid)
       #p ref.target_id
       if compiled_list.include? commitid
         #LOGGER.info "Mark upstream: #{ref.name} => #{commitid}"
@@ -830,7 +838,7 @@ class CompileRepo
       if new_commits.empty?
         LOGGER.info "#{@name}:#{ref.name}:#{commitid} introduced no new commits after fiters, skip build"
       else
-        run_test_for_commits ref, commit, new_commits, lo[:gerrit_info]
+        run_test_for_commits ref, commit, new_commits, lo[:gerrit_info], options
       end
 
       # mark it
@@ -900,12 +908,14 @@ def run_tasks repos
     cmd = $TASK_QUEUE.pop
     case cmd.first
     when "REBUILD"
-      if cmd.size != 3 || repos[cmd[1]].nil?
+      if cmd.size != 4 || repos[cmd[1]].nil?
         LOGGER.error "Rebuild: wrong arguments"
         next
       end
-      LOGGER.info "Rebuild #{cmd[1]}: #{cmd[2]}"
+      LOGGER.info "Rebuild #{cmd[1]}: #{cmd[2]} #{cmd[3]}"
       r = cmd[1]
+
+      fail 'repo not found' unless repos[r]
       compiled_file = File.join repos[r].result_dir, ".compiled"
       compiled_list = File.readlines(compiled_file).map{|line| line.chomp} rescue next
       compiled_list.delete_if {|e| e == cmd[2]}
@@ -913,6 +923,10 @@ def run_tasks repos
       File.open(compiled_file, "w") do |f|
         compiled_list.each {|e| f.puts e}
       end
+
+      Dir.chdir File.join($CONFIG[:repo_abspath], r)
+      repos[r].start_test commitids: [cmd[2]], clean: (cmd[3] == 'CLEAN')
+      Dir.chdir $CONFIG[:repo_abspath]
     else
       LOGGER.error "Unknown task: #{cmd.first}"
       next

@@ -4,6 +4,7 @@ class File
   def self.is_binary?(name)
     myStat = stat(name)
     return false unless myStat.file?
+    return false if myStat.size == 0
     open(name) { |file|
       blk = file.read(myStat.blksize)
       return blk.size == 0 ||

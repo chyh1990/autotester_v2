@@ -199,8 +199,9 @@ post '/repo/:repo/rebuild/:tid' do
   content_type 'application/json'
   repo = params[:repo]
   tid = params[:tid]
+  clean = params[:clean]
   halt 404 unless ReportCache.check_repo repo
-  rpc_backend "REBUILD #{repo} #{tid}"
+  rpc_backend "REBUILD #{repo} #{tid} #{clean.nil? ? 'INCR' : 'CLEAN'}"
   {:status => "OK"}.to_json
 end
 
